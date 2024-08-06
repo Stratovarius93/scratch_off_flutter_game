@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:ui' as ui;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 
@@ -12,18 +14,41 @@ class _ScratchCardScreenState extends State<ScratchCardScreen> {
   final scratchPath = Path();
   double scratchPercentage = 0.0;
   String status = 'Start';
+  ui.Image? overlayImage;
+
+  @override
+  void initState() {
+    super.initState();
+    loadOverlayImage();
+  }
+
+  Future<void> loadOverlayImage() async {
+    const overlayImageProvider = NetworkImage(
+      'https://pics.craiyon.com/2023-09-09/83616b1b2cc24d309022ca230e84912b.webp',
+    );
+    final completer = Completer<ui.Image>();
+    final stream = overlayImageProvider.resolve(const ImageConfiguration());
+    stream.addListener(
+      ImageStreamListener((ImageInfo image, bool synchronousCall) {
+        completer.complete(image.image);
+      }),
+    );
+    final uiImage = await completer.future;
+    setState(() {
+      overlayImage = uiImage;
+    });
+  }
 
   void updateScratchPath(Offset position) {
     setState(() {
       scratchPath.addOval(Rect.fromCircle(center: position, radius: 20));
-      scratchPercentage =
-          getScratchPercentage(); // Update percentage only on scratch
+      scratchPercentage = getScratchPercentage();
     });
   }
 
   double getScratchPercentage() {
     final scratchArea = scratchPath.computeMetrics().fold(
-          0.0,
+          2.0,
           (double previousValue, PathMetric metric) =>
               previousValue + metric.length,
         );
@@ -60,24 +85,24 @@ class _ScratchCardScreenState extends State<ScratchCardScreen> {
                   width: 300,
                   height: 300,
                 ),
-                GestureDetector(
-                  onPanUpdate: (details) {
-                    RenderBox renderBox =
-                        context.findRenderObject() as RenderBox;
-                    Offset localPosition =
-                        renderBox.globalToLocal(details.localPosition);
-                    updateScratchPath(localPosition);
-                  },
-                  child: CustomPaint(
-                    size: const Size(300, 300),
-                    painter: ScratchPainter(scratchPath, scratchPercentage),
+                if (overlayImage != null)
+                  GestureDetector(
+                    onPanUpdate: (details) {
+                      RenderBox renderBox =
+                          context.findRenderObject() as RenderBox;
+                      Offset localPosition =
+                          renderBox.globalToLocal(details.localPosition);
+                      updateScratchPath(localPosition);
+                    },
+                    child: CustomPaint(
+                      size: const Size(300, 300),
+                      painter: ScratchPainter(scratchPath, overlayImage!),
+                    ),
                   ),
-                ),
               ],
             ),
             const SizedBox(height: 20),
             Text('Status: $status'),
-            // Restart button
             ElevatedButton(
               onPressed: () {
                 setState(() {
@@ -97,18 +122,26 @@ class _ScratchCardScreenState extends State<ScratchCardScreen> {
 
 class ScratchPainter extends CustomPainter {
   final Path scratchPath;
-  final double scratchPercentage;
-
-  ScratchPainter(this.scratchPath, this.scratchPercentage);
-
+  final ui.Image overlayImage;
+  ScratchPainter(this.scratchPath, this.overlayImage);
   @override
   void paint(Canvas canvas, Size size) {
-    Paint paint = Paint()
-      ..color = Colors.grey
-      ..style = PaintingStyle.fill;
-    canvas.saveLayer(Rect.fromLTWH(0, 0, size.width, size.height), Paint());
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint);
-
+    Paint paint = Paint();
+    Rect imageRect = Rect.fromLTWH(0, 0, size.width, size.height);
+    canvas.saveLayer(imageRect, paint);
+    canvas.drawImageRect(
+      overlayImage,
+      Rect.fromLTWH(
+          0, 0, overlayImage.width.toDouble(), overlayImage.height.toDouble()),
+      imageRect,
+      paint,
+    );
+    Path borderPath = Path.from(scratchPath);
+    Paint borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.0;
+    canvas.drawPath(borderPath, borderPaint);
     Paint clearPaint = Paint()
       ..color = Colors.transparent
       ..blendMode = BlendMode.clear;
