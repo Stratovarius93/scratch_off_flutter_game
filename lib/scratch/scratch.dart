@@ -2,30 +2,88 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-class ScratchCardScreen extends StatefulWidget {
-  const ScratchCardScreen({Key? key}) : super(key: key);
+enum ScratchStatus { keepScratching, almostThere, youWon, start }
 
-  @override
-  State<ScratchCardScreen> createState() => _ScratchCardScreenState();
+extension ScratchStatusExtension on ScratchStatus {
+  String get name {
+    switch (this) {
+      case ScratchStatus.keepScratching:
+        return 'Keep scratching';
+      case ScratchStatus.almostThere:
+        return 'Almost there';
+      case ScratchStatus.youWon:
+        return 'You won!';
+      case ScratchStatus.start:
+        return 'Start';
+    }
+  }
 }
 
-class _ScratchCardScreenState extends State<ScratchCardScreen> {
+class ScratchCard extends StatefulWidget {
+  final String backgroundImageUrl;
+  final String overlayImageUrl;
+  final void Function(ScratchStatus) onStatusChanged;
+  final double size;
+  final ScratchCardController controller;
+  final BorderRadius borderRadius;
+  const ScratchCard({
+    Key? key,
+    required this.backgroundImageUrl,
+    required this.overlayImageUrl,
+    required this.onStatusChanged,
+    this.size = 300.0,
+    required this.controller,
+    this.borderRadius = const BorderRadius.all(Radius.circular(20)),
+  }) : super(key: key);
+
+  @override
+  State<ScratchCard> createState() => _ScratchCardState();
+}
+
+class _ScratchCardState extends State<ScratchCard> {
+  ui.Image? overlayImage;
+  late Size size;
   final scratchPath = Path();
   double scratchPercentage = 0.0;
-  String status = 'Start';
-  ui.Image? overlayImage;
+  ScratchStatus status = ScratchStatus.start;
+  Future<List<ui.Image>>? imagesFuture;
 
   @override
   void initState() {
     super.initState();
+    size = Size(widget.size, widget.size);
+    imagesFuture = loadImages();
+
     loadOverlayImage();
+    widget.controller.statusStream.listen((status) {
+      if (status == ScratchStatus.start) {
+        reset();
+      }
+    });
+  }
+
+  Future<ui.Image> loadImage(String url) async {
+    final imageProvider = NetworkImage(url);
+    final completer = Completer<ui.Image>();
+    final stream = imageProvider.resolve(const ImageConfiguration());
+    stream.addListener(
+      ImageStreamListener((ImageInfo image, bool synchronousCall) {
+        completer.complete(image.image);
+      }),
+    );
+    return completer.future;
+  }
+
+  Future<List<ui.Image>> loadImages() async {
+    final overlayImageFuture = loadImage(widget.overlayImageUrl);
+    final backgroundImageFuture = loadImage(widget.backgroundImageUrl);
+    return Future.wait([overlayImageFuture, backgroundImageFuture]);
   }
 
   Future<void> loadOverlayImage() async {
-    const overlayImageProvider = NetworkImage(
-      'https://pics.craiyon.com/2023-09-09/83616b1b2cc24d309022ca230e84912b.webp',
-    );
+    final overlayImageProvider = NetworkImage(widget.overlayImageUrl);
     final completer = Completer<ui.Image>();
     final stream = overlayImageProvider.resolve(const ImageConfiguration());
     stream.addListener(
@@ -48,70 +106,106 @@ class _ScratchCardScreenState extends State<ScratchCardScreen> {
 
   double getScratchPercentage() {
     final scratchArea = scratchPath.computeMetrics().fold(
-          2.0,
+          0.0,
           (double previousValue, PathMetric metric) =>
               previousValue + metric.length,
         );
-    const totalArea = 300 * 300;
+    final totalArea = widget.size * widget.size;
     status = getStatus(scratchArea / totalArea);
+    if (status != ScratchStatus.youWon) {
+      HapticFeedback.vibrate();
+    }
+    widget.onStatusChanged(status);
     return scratchArea / totalArea;
   }
 
-  String getStatus(double percentage) {
-    if (percentage < 0.2) {
-      return 'Keep scratching';
-    } else if (percentage < 0.6) {
-      return 'Almost there';
+  ScratchStatus getStatus(double percentage) {
+    if (percentage < 0.1) {
+      return ScratchStatus.keepScratching;
+    } else if (percentage < 0.3) {
+      return ScratchStatus.almostThere;
     } else {
-      return 'You won!';
+      return ScratchStatus.youWon;
     }
+  }
+
+  void reset() {
+    setState(() {
+      scratchPath.reset();
+      scratchPercentage = 0.0;
+      status = ScratchStatus.start;
+      widget.onStatusChanged(status);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scratch Card'),
-      ),
-      body: Center(
-        child: Column(
+    return FutureBuilder<List<ui.Image>>(
+      future: imagesFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Container(
+              width: size.width,
+              height: size.height,
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor.withOpacity(0.3),
+                borderRadius: widget.borderRadius,
+              ),
+              child: const Center(child: CircularProgressIndicator()));
+        } else if (snapshot.hasError) {
+          return Container(
+              width: size.width,
+              height: size.height,
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor.withOpacity(0.3),
+                borderRadius: widget.borderRadius,
+              ),
+              child: Center(
+                  child: Text('Error loading images: ${snapshot.error}')));
+        } else if (snapshot.hasData) {
+          return buildScratchCardGame(snapshot.data![0], snapshot.data![1]);
+        } else {
+          return Container(
+              width: size.width,
+              height: size.height,
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor.withOpacity(0.3),
+                borderRadius: widget.borderRadius,
+              ),
+              child: const Center(child: Text('Unexpected error')));
+        }
+      },
+    );
+  }
+
+  Widget buildScratchCardGame(ui.Image overlayImage, ui.Image backgroundImage) {
+    return Center(
+      child: ClipRRect(
+        borderRadius: widget.borderRadius,
+        child: Stack(
           children: [
-            const SizedBox(height: 20),
-            Stack(
-              children: [
-                Image.network(
-                  'https://media.istockphoto.com/id/1361394182/photo/funny-british-shorthair-cat-portrait-looking-shocked-or-surprised.webp?b=1&s=170667a&w=0&k=20&c=nOa1R7PGaqOaQscx10FpA5ZNenMeDfs-k6VgmmuY4cc=',
-                  fit: BoxFit.cover,
-                  width: 300,
-                  height: 300,
-                ),
-                if (overlayImage != null)
-                  GestureDetector(
-                    onPanUpdate: (details) {
-                      RenderBox renderBox =
-                          context.findRenderObject() as RenderBox;
-                      Offset localPosition =
-                          renderBox.globalToLocal(details.localPosition);
-                      updateScratchPath(localPosition);
-                    },
-                    child: CustomPaint(
-                      size: const Size(300, 300),
-                      painter: ScratchPainter(scratchPath, overlayImage!),
-                    ),
-                  ),
-              ],
+            Image.network(
+              widget.backgroundImageUrl,
+              fit: BoxFit.cover,
+              width: size.width,
+              height: size.height,
             ),
-            const SizedBox(height: 20),
-            Text('Status: $status'),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  scratchPath.reset();
-                  scratchPercentage = 0.0;
-                  status = 'Start';
-                });
+            // if (overlayImage != null)
+            GestureDetector(
+              onPanUpdate: (details) {
+                RenderBox renderBox = context.findRenderObject() as RenderBox;
+                Offset localPosition =
+                    renderBox.globalToLocal(details.globalPosition);
+                Offset adjustedPosition = Offset(
+                  localPosition.dx - (renderBox.size.width - widget.size) / 2,
+                  localPosition.dy - (renderBox.size.height - widget.size) / 2,
+                );
+                updateScratchPath(adjustedPosition);
               },
-              child: const Text('Restart'),
+              child: CustomPaint(
+                size: size,
+                painter: ScratchPainter(scratchPath, overlayImage),
+              ),
             ),
           ],
         ),
@@ -123,6 +217,7 @@ class _ScratchCardScreenState extends State<ScratchCardScreen> {
 class ScratchPainter extends CustomPainter {
   final Path scratchPath;
   final ui.Image overlayImage;
+
   ScratchPainter(this.scratchPath, this.overlayImage);
   @override
   void paint(Canvas canvas, Size size) {
@@ -152,4 +247,30 @@ class ScratchPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
+
+class ScratchCardController {
+  final _statusStreamController = StreamController<ScratchStatus>.broadcast();
+
+  ScratchStatus _status = ScratchStatus.start;
+
+  Stream<ScratchStatus> get statusStream => _statusStreamController.stream;
+
+  ScratchStatus get status => _status;
+
+  void reset() {
+    _status = ScratchStatus.start;
+    _statusStreamController.add(_status);
+  }
+
+  void updateStatus(ScratchStatus newStatus) {
+    if (newStatus != _status) {
+      _status = newStatus;
+      _statusStreamController.add(_status);
+    }
+  }
+
+  void dispose() {
+    _statusStreamController.close();
+  }
 }
